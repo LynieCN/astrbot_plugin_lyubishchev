@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -304,9 +305,12 @@ class LyubishchevService:
                 return date(year, month, day).isoformat()
             except ValueError as exc:
                 raise ValueError("日期格式无效，请使用类似 2026-03-24 的写法。") from exc
-        for keyword, offset in RELATIVE_DATE_OFFSETS.items():
-            if keyword in text:
-                return (now.date() + timedelta(days=offset)).isoformat()
+        matches = [match.group(0) for match in RELATIVE_DATE_RE.finditer(text)]
+        keywords = list(dict.fromkeys(matches))
+        if len(keywords) > 1:
+            raise ValueError("检测到多个相对日期，请只保留一个，例如今天或昨天。")
+        if keywords:
+            return (now.date() + timedelta(days=RELATIVE_DATE_OFFSETS[keywords[0]])).isoformat()
         return now.date().isoformat()
 
     async def create_record(
@@ -344,8 +348,17 @@ class LyubishchevService:
             "updated_at": now.isoformat(),
             "deleted_at": None,
         }
-        record = await self.storage.add_record(payload)
-        await self.refresh_record_memory(record)
+        try:
+            record = await self.storage.add_record(payload)
+            await self.refresh_record_memory(record)
+        except sqlite3.Error as exc:
+            logger.error(
+                "Failed to create record for session %s: %s",
+                session_id,
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError("记录保存失败，请稍后重试。") from exc
         return record
 
     async def amend_record(self, record: dict[str, Any], new_text: str) -> dict[str, Any] | None:
@@ -844,39 +857,7 @@ class LyubishchevService:
             advice.append("- 继续保持稳定记录，后续可以按项目或标签细化统计口径。")
         return advice[:3]
 
-    def _legacy_collect_feedback_text_fragments(self, records: list[dict[str, Any]]) -> list[str]:
-        fragments: list[str] = []
-        for record in records:
-            for value in (
-                record.get("normalized_text"),
-                record.get("raw_text"),
-                record.get("category"),
-                record.get("project"),
-            ):
-                if isinstance(value, str) and value.strip():
-                    fragments.append(value.strip())
-            for tag in record.get("tags", []):
-                if isinstance(tag, str) and tag.strip():
-                    fragments.append(tag.strip())
-        return fragments
-
-    def _legacy_collect_feedback_keyword_hits(
-        self,
-        text: str,
-        keywords: tuple[str, ...],
-        *,
-        limit: int = 4,
-    ) -> list[str]:
-        lowered = text.lower()
-        hits: list[str] = []
-        for keyword in keywords:
-            if keyword.lower() in lowered and keyword not in hits:
-                hits.append(keyword)
-            if len(hits) >= limit:
-                break
-        return hits
-
-    def _legacy_build_feedback_signal_summary(
+    def _feedback_signal_summary_reference(
         self,
         *,
         records: list[dict[str, Any]],
@@ -905,7 +886,7 @@ class LyubishchevService:
             lines.append("- 暂时没有特别明显的情绪或倾向信号，就正常聊天回应。")
         return "\n".join(lines)
 
-    async def _legacy_generate_record_feedback(
+    async def _generate_record_feedback_reference(
         self,
         *,
         session_id: str,
@@ -971,7 +952,7 @@ class LyubishchevService:
                 logger.warning("Record feedback generation failed, fallback to template: %s", exc)
         return self._generate_record_feedback_fallback(record, recent_records)
 
-    async def _legacy_generate_record_feedback_with_llm(
+    async def _generate_record_feedback_with_llm_reference(
         self,
         *,
         provider: Provider,
@@ -1292,9 +1273,6 @@ class LyubishchevService:
         merged = " ".join(lines)
         return re.sub(r"\s+", " ", merged).strip()
 
-    def _legacy_normalize_feedback_text(self, text: str) -> str:
-        return self._normalize_agent_reply(text)
-
     def _normalize_feedback_text(self, text: str) -> str:
         return self._normalize_agent_reply(text, preserve_newlines=True)
 
@@ -1392,7 +1370,7 @@ class LyubishchevService:
             preserve_newlines=preserve_newlines,
         )
 
-    def _legacy_generate_record_feedback_fallback(
+    def _generate_record_feedback_fallback_reference(
         self,
         record: dict[str, Any],
         recent_records: list[dict[str, Any]],

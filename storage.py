@@ -18,8 +18,9 @@ class LyubishchevStorage:
         await asyncio.to_thread(self._initialize_sync)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000;")
         return conn
 
     def _initialize_sync(self) -> None:
@@ -202,6 +203,9 @@ class LyubishchevStorage:
         )
 
     def _resolve_record_id_sync(self, session_id: str, record_id_prefix: str) -> str | None:
+        record_id_prefix = record_id_prefix.strip()
+        if len(record_id_prefix) < 4:
+            return None
         like = f"{record_id_prefix}%"
         with self._connect() as conn:
             rows = conn.execute(
@@ -469,6 +473,9 @@ class LyubishchevStorage:
         )
 
     def _resolve_rule_id_sync(self, session_id: str, rule_id_prefix: str) -> str | None:
+        rule_id_prefix = rule_id_prefix.strip()
+        if len(rule_id_prefix) < 4:
+            return None
         like = f"{rule_id_prefix}%"
         with self._connect() as conn:
             rows = conn.execute(

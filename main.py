@@ -16,7 +16,7 @@ from .service import PLUGIN_NAME, LyubishchevService
 from .storage import LyubishchevStorage
 
 
-@register(PLUGIN_NAME, "Lynie", "柳比歇夫时间管理", "1.2.0")
+@register(PLUGIN_NAME, "Lynie", "柳比歇夫时间管理", "1.2.1")
 class LyubishchevPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
@@ -197,6 +197,9 @@ class LyubishchevPlugin(Star):
         event: AstrMessageEvent,
         record_id_prefix: str,
     ) -> dict | None:
+        record_id_prefix = record_id_prefix.strip()
+        if len(record_id_prefix) < 4:
+            return None
         record_id = await self.storage.resolve_record_id(
             event.unified_msg_origin,
             record_id_prefix,
@@ -210,6 +213,9 @@ class LyubishchevPlugin(Star):
         event: AstrMessageEvent,
         rule_id_prefix: str,
     ) -> dict | None:
+        rule_id_prefix = rule_id_prefix.strip()
+        if len(rule_id_prefix) < 4:
+            return None
         rule_id = await self.storage.resolve_rule_id(
             event.unified_msg_origin,
             rule_id_prefix,
@@ -377,7 +383,7 @@ class LyubishchevPlugin(Star):
                     text=entries[0] if entries else note_text.strip(),
                     source="command",
                 )
-            except Exception as exc:  # noqa: BLE001
+            except (ValueError, RuntimeError) as exc:
                 logger.warning(
                     "/lyu note failed for session %s: %s",
                     event.unified_msg_origin,
@@ -410,7 +416,7 @@ class LyubishchevPlugin(Star):
                     source="command",
                 )
                 records.append(record)
-            except Exception as exc:  # noqa: BLE001
+            except (ValueError, RuntimeError) as exc:
                 logger.warning(
                     "Batch /lyu note failed for line %r: %s",
                     entry,
@@ -734,7 +740,7 @@ class LyubishchevPlugin(Star):
                 text=text,
                 source="auto",
             )
-        except Exception as exc:  # noqa: BLE001
+        except (ValueError, RuntimeError) as exc:
             logger.warning(
                 "Auto record failed for session %s: %s",
                 event.unified_msg_origin,
