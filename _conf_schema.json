@@ -1,0 +1,99 @@
+{
+  "default_timezone": {
+    "description": "默认时区",
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "hint": "用于解析相对日期和定时规则，例如 Asia/Shanghai。"
+  },
+  "analysis_provider_id": {
+    "description": "总结/问答模型 Provider ID",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "留空时会回退到当前会话正在使用的聊天模型。"
+  },
+  "embedding_provider_id": {
+    "description": "Embedding Provider ID",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于长期记忆写入、向量召回和历史追查。"
+  },
+  "rerank_provider_id": {
+    "description": "Rerank Provider ID",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于 /lyu query 的结果重排。"
+  },
+  "record_feedback_provider_id": {
+    "description": "录入反馈 Provider ID",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "可选。默认会优先走当前会话里的 AstrBot 主机器人；这里只作为兜底模型来源。"
+  },
+  "auto_record_prefixes": {
+    "description": "自动记录前缀",
+    "type": "text",
+    "default": "记录：\n记录 \n记时：\n记时 \nlyu：\nlyu:",
+    "hint": "每行一个前缀。消息以这些前缀开头时，插件会尝试自动记录。"
+  },
+  "auto_record_require_wake": {
+    "description": "自动记录要求先唤醒机器人",
+    "type": "bool",
+    "default": true,
+    "hint": "建议开启，避免把普通聊天误判成时间记录。"
+  },
+  "record_feedback_enabled": {
+    "description": "录入后生成反馈",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，每次成功录入都会结合最近聊天和最近记录给出一段录入反馈。"
+  },
+  "record_feedback_max_recent_records": {
+    "description": "反馈参考最近记录数",
+    "type": "int",
+    "default": 6,
+    "hint": "生成录入反馈时，最多参考多少条最近的时间记录。"
+  },
+  "record_feedback_max_recent_chats": {
+    "description": "反馈参考最近聊天条数",
+    "type": "int",
+    "default": 6,
+    "hint": "生成录入反馈时，最多参考多少条最近聊天上下文。"
+  },
+  "record_feedback_prompt_appendix": {
+    "description": "录入反馈附加要求",
+    "type": "text",
+    "default": "",
+    "hint": "可选。会附加到录入反馈的 system prompt 后面。"
+  },
+  "summary_with_advice": {
+    "description": "总结中包含建议",
+    "type": "bool",
+    "default": true
+  },
+  "query_answer_with_llm": {
+    "description": "查询结果使用 LLM 组织答案",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后将直接返回检索命中的证据条目。"
+  },
+  "max_query_candidates": {
+    "description": "查询候选上限",
+    "type": "int",
+    "default": 8,
+    "hint": "长期记忆检索时最多返回多少条候选证据。"
+  },
+  "vector_similarity_threshold": {
+    "description": "向量召回阈值",
+    "type": "float",
+    "default": 0.2,
+    "hint": "值越高越严格，建议范围 0.1 到 0.5。"
+  },
+  "summary_prompt_appendix": {
+    "description": "总结提示词附加要求",
+    "type": "text",
+    "default": "",
+    "hint": "可选。会附加到总结反馈提示词后面；总结默认会优先走当前会话里的 AstrBot 主机器人。"
+  }
+}
