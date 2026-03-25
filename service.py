@@ -212,8 +212,11 @@ class LyubishchevService:
 
         range_match = TIME_RANGE_RE.search(working)
         if range_match:
-            start_time = datetime.strptime(range_match.group("start"), "%H:%M").time()
-            end_time = datetime.strptime(range_match.group("end"), "%H:%M").time()
+            try:
+                start_time = datetime.strptime(range_match.group("start"), "%H:%M").time()
+                end_time = datetime.strptime(range_match.group("end"), "%H:%M").time()
+            except ValueError as exc:
+                raise ValueError("时间段格式无效，请使用类似 09:00-10:30 的写法。") from exc
             base_date = datetime.fromisoformat(f"{record_date}T00:00:00")
             start_dt = datetime.combine(base_date.date(), start_time, now.tzinfo)
             end_dt = datetime.combine(base_date.date(), end_time, now.tzinfo)
@@ -297,7 +300,10 @@ class LyubishchevService:
             year = int(absolute_match.group("year"))
             month = int(absolute_match.group("month"))
             day = int(absolute_match.group("day"))
-            return date(year, month, day).isoformat()
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError as exc:
+                raise ValueError("日期格式无效，请使用类似 2026-03-24 的写法。") from exc
         for keyword, offset in RELATIVE_DATE_OFFSETS.items():
             if keyword in text:
                 return (now.date() + timedelta(days=offset)).isoformat()
@@ -838,7 +844,7 @@ class LyubishchevService:
             advice.append("- 继续保持稳定记录，后续可以按项目或标签细化统计口径。")
         return advice[:3]
 
-    def _collect_feedback_text_fragments(self, records: list[dict[str, Any]]) -> list[str]:
+    def _legacy_collect_feedback_text_fragments(self, records: list[dict[str, Any]]) -> list[str]:
         fragments: list[str] = []
         for record in records:
             for value in (
@@ -854,7 +860,7 @@ class LyubishchevService:
                     fragments.append(tag.strip())
         return fragments
 
-    def _collect_feedback_keyword_hits(
+    def _legacy_collect_feedback_keyword_hits(
         self,
         text: str,
         keywords: tuple[str, ...],
@@ -870,7 +876,7 @@ class LyubishchevService:
                 break
         return hits
 
-    def _build_feedback_signal_summary(
+    def _legacy_build_feedback_signal_summary(
         self,
         *,
         records: list[dict[str, Any]],
@@ -899,7 +905,7 @@ class LyubishchevService:
             lines.append("- 暂时没有特别明显的情绪或倾向信号，就正常聊天回应。")
         return "\n".join(lines)
 
-    async def generate_record_feedback(
+    async def _legacy_generate_record_feedback(
         self,
         *,
         session_id: str,
@@ -965,7 +971,7 @@ class LyubishchevService:
                 logger.warning("Record feedback generation failed, fallback to template: %s", exc)
         return self._generate_record_feedback_fallback(record, recent_records)
 
-    async def _generate_record_feedback_with_llm(
+    async def _legacy_generate_record_feedback_with_llm(
         self,
         *,
         provider: Provider,
@@ -1286,11 +1292,29 @@ class LyubishchevService:
         merged = " ".join(lines)
         return re.sub(r"\s+", " ", merged).strip()
 
-    def _normalize_feedback_text(self, text: str) -> str:
+    def _legacy_normalize_feedback_text(self, text: str) -> str:
         return self._normalize_agent_reply(text)
 
     def _normalize_feedback_text(self, text: str) -> str:
         return self._normalize_agent_reply(text, preserve_newlines=True)
+
+    async def _get_or_create_reply_conversation(
+        self,
+        *,
+        session_id: str,
+        platform_id: str,
+    ) -> Any | None:
+        conv_mgr = self.context.conversation_manager
+        conversation = None
+        cid = await conv_mgr.get_curr_conversation_id(session_id)
+        if cid:
+            conversation = await conv_mgr.get_conversation(session_id, cid)
+        if conversation:
+            return conversation
+        cid = await conv_mgr.new_conversation(session_id, platform_id)
+        if not cid:
+            return None
+        return await conv_mgr.get_conversation(session_id, cid)
 
     async def _generate_current_bot_reply(
         self,
@@ -1304,7 +1328,6 @@ class LyubishchevService:
         from astrbot.core.astr_main_agent import (
             MainAgentBuildConfig,
             build_main_agent,
-            _get_session_conv,
         )
         from astrbot.core.cron.events import CronMessageEvent
         from astrbot.core.platform.message_session import MessageSession
@@ -1323,8 +1346,20 @@ class LyubishchevService:
         )
         synthetic_event.platform_meta.support_proactive_message = False
 
-        conversation = await _get_session_conv(synthetic_event, self.context)
-        contexts = json.loads(conversation.history or "[]")
+        conversation = await self._get_or_create_reply_conversation(
+            session_id=session_id,
+            platform_id=synthetic_event.get_platform_id(),
+        )
+        if not conversation:
+            logger.warning("Failed to get conversation for AstrBot reply generation: %s", session_id)
+            return None
+        try:
+            contexts = json.loads(conversation.history or "[]")
+            if not isinstance(contexts, list):
+                contexts = []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse conversation history for AstrBot reply generation: %s", exc)
+            contexts = []
         cfg = self.context.get_config(umo=session_id)
         tool_call_timeout = cfg.get("provider_settings", {}).get("tool_call_timeout", 120)
         req = ProviderRequest(
@@ -1357,7 +1392,7 @@ class LyubishchevService:
             preserve_newlines=preserve_newlines,
         )
 
-    def _generate_record_feedback_fallback(
+    def _legacy_generate_record_feedback_fallback(
         self,
         record: dict[str, Any],
         recent_records: list[dict[str, Any]],
@@ -1517,12 +1552,15 @@ class LyubishchevService:
         embedding_provider_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        chunks = await self.storage.list_memory_chunks_with_embeddings(session_id)
+        scan_limit = max(limit * 100, 1000)
+        chunks = await self.storage.list_memory_chunks_with_embeddings(
+            session_id,
+            embedding_provider_id=embedding_provider_id,
+            limit=scan_limit,
+        )
         scored: list[dict[str, Any]] = []
         threshold = self.similarity_threshold()
         for chunk in chunks:
-            if embedding_provider_id and chunk.get("embedding_provider_id") != embedding_provider_id:
-                continue
             embedding = chunk.get("embedding_json")
             if not embedding:
                 continue

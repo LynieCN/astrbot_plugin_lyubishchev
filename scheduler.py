@@ -81,8 +81,33 @@ class LyubishchevScheduler:
         rule = await self.storage.get_summary_rule(rule_id)
         if rule is None:
             return False
-        await self._execute_rule(rule)
+        try:
+            await self._execute_rule(rule)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Lyubishchev manual rule %s failed: %s", rule_id, exc, exc_info=True)
+            return False
         return True
+
+    def _resolve_period_args(self, rule: dict) -> tuple[str, int | None]:
+        period_type = str(rule["period_type"])
+        if period_type.startswith("custom:"):
+            raw_days = period_type.split(":", 1)[1].strip()
+            try:
+                custom_days = int(raw_days)
+            except ValueError as exc:
+                raise ValueError("custom 周期格式错误，应为 custom:天数") from exc
+            if custom_days <= 0:
+                raise ValueError("custom 周期中的天数必须大于 0")
+            return "custom", custom_days
+        if period_type == "custom":
+            try:
+                custom_days = int(rule.get("lookback_days") or 7)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("custom 周期的回看天数无效") from exc
+            if custom_days <= 0:
+                raise ValueError("custom 周期中的天数必须大于 0")
+            return "custom", custom_days
+        return period_type, None
 
     async def _run_rule_job(self, rule_id: str) -> None:
         try:
@@ -96,15 +121,7 @@ class LyubishchevScheduler:
     async def _execute_rule(self, rule: dict) -> None:
         timezone_name = str(rule.get("timezone") or self.service.get_default_timezone())
         now = self.service._now(timezone_name)
-        period_type = str(rule["period_type"])
-        custom_days = None
-        summary_type = period_type
-        if period_type.startswith("custom:"):
-            summary_type = "custom"
-            custom_days = int(period_type.split(":", 1)[1])
-        elif period_type == "custom":
-            summary_type = "custom"
-            custom_days = int(rule.get("lookback_days") or 7)
+        summary_type, custom_days = self._resolve_period_args(rule)
         start_date, end_date = self.service.get_period_bounds(
             summary_type,
             custom_days=custom_days,

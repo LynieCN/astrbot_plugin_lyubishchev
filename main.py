@@ -8,9 +8,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from astrbot.api import AstrBotConfig, llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
-from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .scheduler import LyubishchevScheduler
 from .service import PLUGIN_NAME, LyubishchevService
@@ -23,7 +22,7 @@ class LyubishchevPlugin(Star):
         super().__init__(context)
         self.config = config
         self.plugin_name = PLUGIN_NAME
-        self.data_dir = Path(get_astrbot_plugin_data_path()) / self.plugin_name
+        self.data_dir = Path(StarTools.get_data_dir(self.plugin_name))
         self.storage = LyubishchevStorage(self.data_dir / "lyubishchev.sqlite3")
         self.service = LyubishchevService(
             context=self.context,
@@ -52,6 +51,13 @@ class LyubishchevPlugin(Star):
 
     def _current_timestamp(self) -> str:
         return self.service._now().isoformat()
+
+    def _format_user_error(self, exc: Exception, fallback: str) -> str:
+        if isinstance(exc, ValueError):
+            message = str(exc).strip()
+            if message:
+                return message
+        return fallback
 
     def _extract_command_payload(
         self,
@@ -362,14 +368,26 @@ class LyubishchevPlugin(Star):
 
         entries = self._split_note_entries(note_text)
         if len(entries) <= 1:
-            record = await self.service.create_record(
-                session_id=event.unified_msg_origin,
-                platform_id=event.get_platform_id(),
-                sender_id=event.get_sender_id(),
-                sender_name=event.get_sender_name(),
-                text=entries[0] if entries else note_text.strip(),
-                source="command",
-            )
+            try:
+                record = await self.service.create_record(
+                    session_id=event.unified_msg_origin,
+                    platform_id=event.get_platform_id(),
+                    sender_id=event.get_sender_id(),
+                    sender_name=event.get_sender_name(),
+                    text=entries[0] if entries else note_text.strip(),
+                    source="command",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "/lyu note failed for session %s: %s",
+                    event.unified_msg_origin,
+                    exc,
+                    exc_info=True,
+                )
+                yield event.plain_result(
+                    self._format_user_error(exc, "记录失败，请检查时间写法后重试。")
+                )
+                return
             yield event.plain_result(
                 await self._build_record_created_reply(
                     session_id=event.unified_msg_origin,
@@ -393,8 +411,18 @@ class LyubishchevPlugin(Star):
                 )
                 records.append(record)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Batch /lyu note failed for line %r: %s", entry, exc)
-                failures.append((entry, str(exc)))
+                logger.warning(
+                    "Batch /lyu note failed for line %r: %s",
+                    entry,
+                    exc,
+                    exc_info=True,
+                )
+                failures.append(
+                    (
+                        entry,
+                        self._format_user_error(exc, "格式有误，请检查后重试。"),
+                    )
+                )
         yield event.plain_result(
             await self._build_batch_record_reply_with_feedback(
                 session_id=event.unified_msg_origin,
@@ -697,14 +725,27 @@ class LyubishchevPlugin(Star):
             yield event.plain_result("检测到记录前缀，但没有实际内容。")
             event.stop_event()
             return
-        record = await self.service.create_record(
-            session_id=event.unified_msg_origin,
-            platform_id=event.get_platform_id(),
-            sender_id=event.get_sender_id(),
-            sender_name=event.get_sender_name(),
-            text=text,
-            source="auto",
-        )
+        try:
+            record = await self.service.create_record(
+                session_id=event.unified_msg_origin,
+                platform_id=event.get_platform_id(),
+                sender_id=event.get_sender_id(),
+                sender_name=event.get_sender_name(),
+                text=text,
+                source="auto",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Auto record failed for session %s: %s",
+                event.unified_msg_origin,
+                exc,
+                exc_info=True,
+            )
+            yield event.plain_result(
+                self._format_user_error(exc, "自动记录失败，请检查时间写法后重试。")
+            )
+            event.stop_event()
+            return
         yield event.plain_result(
             await self._build_record_created_reply(
                 session_id=event.unified_msg_origin,

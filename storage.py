@@ -116,11 +116,17 @@ class LyubishchevStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_memory_chunks_session
                     ON memory_chunks(session_id, source_type, updated_at);
+
+                CREATE INDEX IF NOT EXISTS idx_memory_chunks_session_provider
+                    ON memory_chunks(session_id, embedding_provider_id, updated_at);
                 """
             )
 
     def _json_dumps(self, value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    def _escape_like(self, value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
@@ -603,13 +609,13 @@ class LyubishchevStorage:
         query_text: str,
         limit: int,
     ) -> list[dict[str, Any]]:
-        like = f"%{query_text}%"
+        like = f"%{self._escape_like(query_text)}%"
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT *
                 FROM memory_chunks
-                WHERE session_id = ? AND content LIKE ?
+                WHERE session_id = ? AND content LIKE ? ESCAPE '\'
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
@@ -620,25 +626,39 @@ class LyubishchevStorage:
     async def list_memory_chunks_with_embeddings(
         self,
         session_id: str,
+        *,
+        embedding_provider_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
-            self._list_memory_chunks_with_embeddings_sync, session_id
+            self._list_memory_chunks_with_embeddings_sync,
+            session_id,
+            embedding_provider_id,
+            limit,
         )
 
     def _list_memory_chunks_with_embeddings_sync(
         self,
         session_id: str,
+        embedding_provider_id: str | None,
+        limit: int | None,
     ) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
+        clauses = ["session_id = ?", "embedding_json IS NOT NULL"]
+        params: list[Any] = [session_id]
+        if embedding_provider_id:
+            clauses.append("embedding_provider_id = ?")
+            params.append(embedding_provider_id)
+        query = """
                 SELECT *
                 FROM memory_chunks
-                WHERE session_id = ? AND embedding_json IS NOT NULL
+                WHERE {where_clause}
                 ORDER BY updated_at DESC
-                """,
-                (session_id,),
-            ).fetchall()
+        """.format(where_clause=" AND ".join(clauses))
+        if limit is not None:
+            query += "\n                LIMIT ?"
+            params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
         return [self._row_to_dict(row) or {} for row in rows]
 
     async def count_records(self, session_id: str) -> int:
