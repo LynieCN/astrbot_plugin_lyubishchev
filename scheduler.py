@@ -127,8 +127,10 @@ class LyubishchevScheduler:
             custom_days=custom_days,
             now=now,
         )
+        data_session = str(rule["session_id"])
+        send_session = self.service.get_raw_session_id(data_session)
         summary = await self.service.generate_summary(
-            session_id=str(rule["session_id"]),
+            session_id=data_session,
             summary_type=summary_type,
             start_date=start_date,
             end_date=end_date,
@@ -141,7 +143,7 @@ class LyubishchevScheduler:
                     f"统计区间: {start_date.isoformat()} -> {end_date.isoformat()}\n"
                     "本周期暂无可用记录。"
                 )
-                sent = await self.sender(str(rule["session_id"]), message)
+                sent = await self.sender(send_session, message)
                 if not sent:
                     logger.warning("Failed to send empty-summary message for rule %s", rule.get("rule_id"))
             return
@@ -150,6 +152,6 @@ class LyubishchevScheduler:
             f"触发时间: {now.isoformat(timespec='seconds')}\n\n"
             f"{summary['content']}"
         )
-        sent = await self.sender(str(rule["session_id"]), message)
+        sent = await self.sender(send_session, message)
         if not sent:
             logger.warning("Failed to send summary message for rule %s", rule.get("rule_id"))

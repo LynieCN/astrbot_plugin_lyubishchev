@@ -10,7 +10,7 @@
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "留空时会回退到当前会话正在使用的聊天模型。"
+    "hint": "用于 /t sm 和 /t qy 的主要模型来源；留空时会回退到当前会话正在使用的聊天模型。"
   },
   "embedding_provider_id": {
     "description": "Embedding Provider ID",
@@ -22,7 +22,7 @@
     "description": "Rerank Provider ID",
     "type": "string",
     "default": "",
-    "hint": "可选。用于 /lyu query 的结果重排。"
+    "hint": "可选。用于 /t qy 的结果重排。"
   },
   "record_feedback_provider_id": {
     "description": "录入反馈 Provider ID",
@@ -31,17 +31,11 @@
     "_special": "select_provider",
     "hint": "可选。默认会优先走当前会话里的 AstrBot 主机器人；这里只作为兜底模型来源。"
   },
-  "auto_record_prefixes": {
-    "description": "自动记录前缀",
-    "type": "text",
-    "default": "记录：\n记录 \n记时：\n记时 \nlyu：\nlyu:",
-    "hint": "每行一个前缀。消息以这些前缀开头时，插件会尝试自动记录。"
-  },
-  "auto_record_require_wake": {
-    "description": "自动记录要求先唤醒机器人",
-    "type": "bool",
-    "default": true,
-    "hint": "建议开启，避免把普通聊天误判成时间记录。"
+  "record_scope": {
+    "description": "记录隔离粒度",
+    "type": "string",
+    "default": "sender",
+    "hint": "sender=按发送者隔离（推荐，群聊不会串账）；session=按会话隔离（同一会话共享账本）。"
   },
   "record_feedback_enabled": {
     "description": "录入后生成反馈",
@@ -94,6 +88,6 @@
     "description": "总结提示词附加要求",
     "type": "text",
     "default": "",
-    "hint": "可选。会附加到总结反馈提示词后面；总结默认会优先走当前会话里的 AstrBot 主机器人。"
+    "hint": "可选。会附加到总结反馈提示词后面；总结默认优先走 analysis_provider_id，留空时回退当前会话模型。"
   }
 }

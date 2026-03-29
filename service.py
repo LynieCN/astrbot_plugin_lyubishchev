@@ -88,6 +88,45 @@ DURATION_RE = re.compile(
     r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>小时|小時|分钟|分鐘|h|hr|hrs|min|m)(?:\b|$)",
     flags=re.IGNORECASE,
 )
+QUERY_TERM_STOPWORDS = (
+    "帮我",
+    "给我",
+    "看一下",
+    "看下",
+    "看看",
+    "查一下",
+    "查下",
+    "找一下",
+    "找找",
+    "找出",
+    "翻一下",
+    "翻翻",
+    "最近",
+    "时间",
+    "记录",
+    "账本",
+    "有关",
+    "相关",
+    "主要",
+    "是不是",
+    "有没有",
+    "做了什么",
+    "花在哪",
+    "花在",
+    "一下",
+    "情况",
+    "什么",
+    "哪些",
+    "怎么",
+    "请",
+    "我",
+    "的",
+    "了",
+    "吗",
+    "呢",
+    "吧",
+    "和",
+)
 
 
 @dataclass
@@ -127,13 +166,6 @@ class LyubishchevService:
             tz = "Asia/Shanghai"
         return tz
 
-    def get_auto_record_prefixes(self) -> list[str]:
-        raw = str(self.config.get("auto_record_prefixes", "") or "")
-        return [line.strip() for line in raw.splitlines() if line.strip()]
-
-    def auto_record_require_wake(self) -> bool:
-        return bool(self.config.get("auto_record_require_wake", True))
-
     def query_answer_with_llm(self) -> bool:
         return bool(self.config.get("query_answer_with_llm", True))
 
@@ -169,6 +201,21 @@ class LyubishchevService:
 
     def record_feedback_prompt_appendix(self) -> str:
         return str(self.config.get("record_feedback_prompt_appendix", "") or "").strip()
+
+    def get_record_scope(self) -> str:
+        return str(self.config.get("record_scope", "sender") or "sender").strip().lower()
+
+    def get_scoped_session_id(self, session_id: str, sender_id: str) -> str:
+        """Build a session key that respects record_scope config."""
+        if self.get_record_scope() == "sender" and sender_id:
+            return f"{session_id}::{sender_id}"
+        return session_id
+
+    def get_raw_session_id(self, scoped_session_id: str) -> str:
+        """Strip sender scope suffix to get the original session_id for provider/conversation lookup."""
+        if "::" in scoped_session_id:
+            return scoped_session_id.rsplit("::", 1)[0]
+        return scoped_session_id
 
     def _now(self, timezone_name: str | None = None) -> datetime:
         return datetime.now(ZoneInfo(timezone_name or self.get_default_timezone()))
@@ -525,7 +572,8 @@ class LyubishchevService:
         if provider_id:
             provider = self.context.get_provider_by_id(provider_id)
         elif session_id:
-            provider = self.context.get_using_provider(umo=session_id)
+            raw = self.get_raw_session_id(session_id)
+            provider = self.context.get_using_provider(umo=raw)
         if provider and isinstance(provider, Provider):
             return provider
         return None
@@ -554,7 +602,8 @@ class LyubishchevService:
         if provider_id:
             provider = self.context.get_provider_by_id(provider_id)
         else:
-            provider = self.context.get_using_provider(umo=session_id)
+            raw = self.get_raw_session_id(session_id)
+            provider = self.context.get_using_provider(umo=raw)
             if provider is None:
                 provider = self.get_chat_provider(session_id)
         if provider and isinstance(provider, Provider):
@@ -582,6 +631,218 @@ class LyubishchevService:
             days = max(custom_days or 1, 1)
             return today - timedelta(days=days - 1), today
         raise ValueError(f"Unsupported period_type: {period_type}")
+
+    def parse_natural_period(
+        self,
+        spec: str,
+        now: datetime | None = None,
+    ) -> tuple[str, date, date]:
+        """Parse natural language period specification into (summary_type, start, end)."""
+        now = now or self._now()
+        today = now.date()
+        s = spec.strip().lower()
+
+        # Simple keywords
+        if s in {"day", "今天", "today"}:
+            return "day", today, today
+        if s in {"yesterday", "昨天", "昨日"}:
+            d = today - timedelta(days=1)
+            return "day", d, d
+        if s in {"前天"}:
+            d = today - timedelta(days=2)
+            return "day", d, d
+        if s in {"week", "本周", "这周", "this week"}:
+            start = today - timedelta(days=today.weekday())
+            return "week", start, today
+        if s in {"上周", "last week"}:
+            this_monday = today - timedelta(days=today.weekday())
+            end = this_monday - timedelta(days=1)
+            start = end - timedelta(days=6)
+            return "week", start, end
+        if s in {"month", "本月", "这月", "this month"}:
+            return "month", today.replace(day=1), today
+        if s in {"上月", "上个月", "last month"}:
+            first = today.replace(day=1)
+            end = first - timedelta(days=1)
+            start = end.replace(day=1)
+            return "month", start, end
+
+        # "最近N天" / "近N天" / "N天" / "Nd" / "N days"
+        m = re.match(r"(?:最近|近)?(\d+)\s*(?:天|d|days?)$", s)
+        if m:
+            days = int(m.group(1))
+            if days <= 0:
+                raise ValueError("天数必须大于 0。")
+            return "custom", today - timedelta(days=days - 1), today
+
+        # Backward compat: "custom:N"
+        if s.startswith("custom:"):
+            try:
+                days = int(s.split(":", 1)[1])
+            except ValueError as exc:
+                raise ValueError("custom 格式错误，应为 custom:7") from exc
+            if days <= 0:
+                raise ValueError("custom 天数必须大于 0。")
+            return "custom", today - timedelta(days=days - 1), today
+
+        # Range: "YYYY-MM-DD,YYYY-MM-DD" or "YYYY-MM-DD~YYYY-MM-DD"
+        if s.startswith("range:"):
+            s = s[6:]
+        range_full = re.match(
+            r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s*[,~至到—–\-]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})$",
+            s,
+        )
+        if range_full:
+            try:
+                start = date.fromisoformat(range_full.group(1).replace("/", "-"))
+                end = date.fromisoformat(range_full.group(2).replace("/", "-"))
+            except ValueError as exc:
+                raise ValueError("日期格式无效") from exc
+            if end < start:
+                raise ValueError("结束日期不能早于开始日期")
+            return "range", start, end
+
+        # Short range: "M.D-M.D" or "M/D-M/D" (infer current year)
+        range_short = re.match(
+            r"(\d{1,2})[./](\d{1,2})\s*[-~至到—–]\s*(\d{1,2})[./](\d{1,2})$",
+            s,
+        )
+        if range_short:
+            try:
+                start = date(
+                    today.year, int(range_short.group(1)), int(range_short.group(2))
+                )
+                end = date(
+                    today.year, int(range_short.group(3)), int(range_short.group(4))
+                )
+            except ValueError as exc:
+                raise ValueError("日期格式无效") from exc
+            if end < start:
+                raise ValueError("结束日期不能早于开始日期")
+            return "range", start, end
+
+        # Single date: "YYYY-MM-DD"
+        single_date = re.match(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})$", s)
+        if single_date:
+            try:
+                d = date.fromisoformat(single_date.group(1).replace("/", "-"))
+            except ValueError as exc:
+                raise ValueError("日期格式无效") from exc
+            return "day", d, d
+
+        raise ValueError(
+            "无法识别的周期参数，支持：今天/昨天/本周/上周/本月/上月/最近N天/日期范围"
+        )
+
+    WEEKDAY_MAP: dict[str, str] = {
+        "一": "1", "二": "2", "三": "3", "四": "4",
+        "五": "5", "六": "6", "日": "0", "天": "0",
+    }
+
+    def parse_natural_schedule(self, spec: str) -> tuple[str, str]:
+        """Parse natural language schedule into (cron_expr, inferred_period_type)."""
+        s = spec.strip()
+
+        # "每天22点" / "每天22:00" / "每天22时"
+        m = re.match(r"每天\s*(\d{1,2})(?::(\d{2}))?\s*(?:点|时)?$", s)
+        if m:
+            hour, minute = int(m.group(1)), int(m.group(2) or 0)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("时间超出范围")
+            return f"{minute} {hour} * * *", "day"
+
+        # "每周日21点" / "每周一9:30"
+        m = re.match(
+            r"每周([一二三四五六日天])\s*(\d{1,2})(?::(\d{2}))?\s*(?:点|时)?$", s
+        )
+        if m:
+            weekday = self.WEEKDAY_MAP.get(m.group(1))
+            if weekday is None:
+                raise ValueError(f"无法识别的星期：{m.group(1)}")
+            hour, minute = int(m.group(2)), int(m.group(3) or 0)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("时间超出范围")
+            return f"{minute} {hour} * * {weekday}", "week"
+
+        # "每月1号9点" / "每月15号20:00"
+        m = re.match(
+            r"每月(\d{1,2})[号日]\s*(\d{1,2})(?::(\d{2}))?\s*(?:点|时)?$", s
+        )
+        if m:
+            day = int(m.group(1))
+            hour, minute = int(m.group(2)), int(m.group(3) or 0)
+            if not (1 <= day <= 31):
+                raise ValueError("日期超出范围")
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("时间超出范围")
+            return f"{minute} {hour} {day} * *", "month"
+
+        raise ValueError(
+            "无法识别的时间表达式，支持：每天22点、每周日21点、每月1号9点"
+        )
+
+    async def start_timer(
+        self,
+        *,
+        session_id: str,
+        platform_id: str,
+        sender_id: str,
+        sender_name: str,
+        text: str,
+    ) -> dict[str, Any]:
+        existing = await self.storage.get_active_timer(session_id)
+        if existing:
+            desc = existing.get("normalized_text") or existing.get("raw_text") or ""
+            raise ValueError(
+                f"已有正在计时的任务：{desc}\n请先用 /t of 停止当前计时。"
+            )
+        now = self._now()
+        parsed = self.parse_record_text(text, now=now)
+        payload = {
+            "session_id": session_id,
+            "platform_id": platform_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "record_kind": parsed.record_kind,
+            "record_date": now.date().isoformat(),
+            "raw_text": parsed.raw_text,
+            "normalized_text": parsed.normalized_text,
+            "started_at": now.isoformat(),
+            "ended_at": None,
+            "duration_minutes": None,
+            "category": parsed.category,
+            "project": parsed.project,
+            "tags": parsed.tags,
+            "source": "timer",
+            "parser_confidence": 0.9,
+            "parser_notes": "计时中，用 /t of 结束。",
+            "status": "timing",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "deleted_at": None,
+        }
+        return await self.storage.add_record(payload)
+
+    async def stop_timer(self, session_id: str) -> dict[str, Any] | None:
+        timer = await self.storage.get_active_timer(session_id)
+        if not timer:
+            return None
+        now = self._now()
+        started = datetime.fromisoformat(timer["started_at"])
+        duration_minutes = max(int((now - started).total_seconds() // 60), 1)
+        updated = await self.storage.amend_record(
+            timer["record_id"],
+            {
+                "ended_at": now.isoformat(),
+                "duration_minutes": duration_minutes,
+                "status": "active",
+                "updated_at": now.isoformat(),
+                "parser_notes": "",
+            },
+        )
+        if updated:
+            await self.refresh_record_memory(updated)
+        return updated
 
     async def build_summary_snapshot(
         self,
@@ -671,29 +932,45 @@ class LyubishchevService:
 
     def _build_stats(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         total_minutes = 0
+        plan_minutes = 0
         missing_duration = 0
         category_counter: defaultdict[str, int] = defaultdict(int)
         tag_counter: defaultdict[str, int] = defaultdict(int)
         project_counter: defaultdict[str, int] = defaultdict(int)
         kind_counter: Counter[str] = Counter()
+        actual_record_count = 0
+        plan_record_count = 0
 
         for record in records:
-            kind_counter.update([record.get("record_kind", "actual")])
+            record_kind = str(record.get("record_kind", "actual") or "actual")
+            is_plan = record_kind == "plan"
+            kind_counter.update([record_kind])
+            if is_plan:
+                plan_record_count += 1
+            else:
+                actual_record_count += 1
             minutes = record.get("duration_minutes")
             if minutes is None:
                 missing_duration += 1
             else:
-                total_minutes += int(minutes)
+                minute_value = int(minutes)
+                if is_plan:
+                    plan_minutes += minute_value
+                    continue
+                total_minutes += minute_value
                 if record.get("category"):
-                    category_counter[str(record["category"])] += int(minutes)
+                    category_counter[str(record["category"])] += minute_value
                 if record.get("project"):
-                    project_counter[str(record["project"])] += int(minutes)
+                    project_counter[str(record["project"])] += minute_value
                 for tag in record.get("tags", []):
-                    tag_counter[str(tag)] += int(minutes)
+                    tag_counter[str(tag)] += minute_value
 
         return {
             "record_count": len(records),
+            "actual_record_count": actual_record_count,
+            "plan_record_count": plan_record_count,
             "total_minutes": total_minutes,
+            "plan_minutes": plan_minutes,
             "missing_duration_count": missing_duration,
             "kind_distribution": dict(kind_counter),
             "category_minutes": dict(sorted(category_counter.items(), key=lambda item: item[1], reverse=True)),
@@ -765,45 +1042,16 @@ class LyubishchevService:
         )
         if appendix := self.summary_prompt_appendix():
             system_prompt += appendix
+        provider = self.get_chat_provider(session_id)
+        if not provider:
+            return None
         return await self._generate_current_bot_reply(
             session_id=session_id,
             prompt=prompt,
             system_prompt=system_prompt,
             preserve_newlines=True,
+            provider=provider,
         )
-
-    async def _render_summary_text_with_llm(
-        self,
-        *,
-        provider: Provider,
-        summary_type: str,
-        start_date: date,
-        end_date: date,
-        records: list[dict[str, Any]],
-        stats: dict[str, Any],
-        with_advice: bool,
-    ) -> str:
-        record_lines = "\n".join(
-            f"- {self.format_record_line(record)}" for record in records[:80]
-        )
-        prompt = (
-            f"周期类型: {summary_type}\n"
-            f"统计区间: {start_date.isoformat()} -> {end_date.isoformat()}\n"
-            f"聚合统计: {json.dumps(stats, ensure_ascii=False)}\n"
-            f"记录列表:\n{record_lines}\n"
-        )
-        system_prompt = (
-            "你是柳比歇夫时间管理助手。"
-            "请严格基于用户给出的真实时间记录做总结，不要编造未出现的时间事实。"
-            "输出中文，结构清晰，适合直接发给用户。"
-            "至少包含：总体概览、时间分配、记录质量观察。"
-        )
-        if with_advice:
-            system_prompt += "最后追加 2-3 条可执行的时间管理建议。"
-        if appendix := self.summary_prompt_appendix():
-            system_prompt += appendix
-        response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
-        return response.completion_text.strip()
 
     def _render_summary_text_fallback(
         self,
@@ -821,6 +1069,11 @@ class LyubishchevService:
             f"记录数: {stats['record_count']}",
             f"可统计总时长: {stats['total_minutes']} 分钟",
         ]
+        if stats.get("plan_record_count"):
+            lines.append(
+                f"其中计划记录 {stats['plan_record_count']} 条，共 {stats.get('plan_minutes', 0)} 分钟；"
+                "上面的总时长只统计实际记录。"
+            )
         if stats["category_minutes"]:
             lines.append("分类分布:")
             for key, minutes in list(stats["category_minutes"].items())[:5]:
@@ -851,141 +1104,12 @@ class LyubishchevService:
             total = stats.get("total_minutes", 0) or 1
             if top_minutes / total >= 0.6:
                 advice.append(f"- 当前 {top_name} 占用时间明显偏高，建议检查是否挤压了其他关键事项。")
-        if stats.get("record_count", 0) < 3:
+        actual_record_count = stats.get("actual_record_count", stats.get("record_count", 0))
+        if actual_record_count < 3:
             advice.append("- 记录密度偏低，可以把碎片事项也纳入记录，后续复盘会更完整。")
         if not advice:
             advice.append("- 继续保持稳定记录，后续可以按项目或标签细化统计口径。")
         return advice[:3]
-
-    def _feedback_signal_summary_reference(
-        self,
-        *,
-        records: list[dict[str, Any]],
-        recent_records: list[dict[str, Any]],
-        recent_chat_lines: list[str],
-    ) -> str:
-        current_text = " ".join(self._collect_feedback_text_fragments(records))
-        recent_record_text = " ".join(self._collect_feedback_text_fragments(recent_records[:6]))
-        recent_chat_text = " ".join(recent_chat_lines)
-        positive_hits = self._collect_feedback_keyword_hits(current_text, POSITIVE_FEEDBACK_KEYWORDS)
-        waste_hits = self._collect_feedback_keyword_hits(current_text, WASTE_FEEDBACK_KEYWORDS)
-        comfort_hits = self._collect_feedback_keyword_hits(
-            f"{current_text} {recent_chat_text}",
-            COMFORT_FEEDBACK_KEYWORDS,
-        )
-        lines = ["可能成立的判断信号如下，只有证据够时才使用，不要硬编："]
-        if positive_hits:
-            lines.append("- 正向推进信号: " + "、".join(positive_hits))
-        if waste_hits:
-            lines.append("- 容易被吐槽的拖延/消磨信号: " + "、".join(waste_hits))
-        if comfort_hits:
-            lines.append("- 最近可能有点累或情绪不太好的信号: " + "、".join(comfort_hits))
-        if recent_record_text:
-            lines.append("- 最近时间记录也能帮助判断节奏是否连续。")
-        if len(lines) == 1:
-            lines.append("- 暂时没有特别明显的情绪或倾向信号，就正常聊天回应。")
-        return "\n".join(lines)
-
-    async def _generate_record_feedback_reference(
-        self,
-        *,
-        session_id: str,
-        record: dict[str, Any],
-    ) -> str | None:
-        if not self.record_feedback_enabled():
-            return None
-
-        recent_records = await self.storage.list_records(
-            session_id,
-            limit=max(self.record_feedback_max_recent_records() + 1, 2),
-        )
-        recent_records = [item for item in recent_records if item["record_id"] != record["record_id"]]
-        recent_records = recent_records[: self.record_feedback_max_recent_records()]
-        recent_chat_lines = await self._get_recent_chat_lines(
-            session_id=session_id,
-            limit=self.record_feedback_max_recent_chats(),
-        )
-
-        prompt = (
-            f"用户刚录入了一条新的时间记录，请你做一个短反馈。\n"
-            f"新记录:\n{self.render_record_for_memory(record)}\n\n"
-            f"最近聊天摘录:\n"
-            + ("\n".join(f"- {line}" for line in recent_chat_lines) or "无")
-            + "\n\n最近时间记录:\n"
-            + (
-                "\n".join(
-                    f"- {self.format_record_line(item)}"
-                    for item in recent_records[: self.record_feedback_max_recent_records()]
-                )
-                or "无"
-            )
-        )
-        system_prompt = (
-            "你是当前会话中的 AstrBot。用户刚记了一条时间账，请给出很短的反馈。\n"
-            "要求：\n"
-            "1. 输出中文，2到3句，总长度控制在30到90字。\n"
-            "2. 先自然回应这条记录，再给1条简短建议。\n"
-            "3. 可以参考最近聊天和最近记录，但不能编造事实。\n"
-            "4. 不要过度脑补用户情绪、生活状态或关系氛围。\n"
-            "5. 不要写标题、列表、emoji，也不要机械复述原文。"
-        )
-        if appendix := self.record_feedback_prompt_appendix():
-            system_prompt += appendix
-        bot_feedback = await self._generate_current_bot_reply(
-            session_id=session_id,
-            prompt=prompt,
-            system_prompt=system_prompt,
-        )
-        if bot_feedback:
-            return bot_feedback
-
-        provider = self.get_record_feedback_provider(session_id)
-        if provider:
-            try:
-                return await self._generate_record_feedback_with_llm(
-                    provider=provider,
-                    record=record,
-                    recent_records=recent_records,
-                    recent_chat_lines=recent_chat_lines,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Record feedback generation failed, fallback to template: %s", exc)
-        return self._generate_record_feedback_fallback(record, recent_records)
-
-    async def _generate_record_feedback_with_llm_reference(
-        self,
-        *,
-        provider: Provider,
-        record: dict[str, Any],
-        recent_records: list[dict[str, Any]],
-        recent_chat_lines: list[str],
-    ) -> str | None:
-        recent_records_block = "\n".join(
-            f"- {self.format_record_line(item)}" for item in recent_records[: self.record_feedback_max_recent_records()]
-        ) or "无"
-        recent_chat_block = "\n".join(f"- {line}" for line in recent_chat_lines) or "无"
-        prompt = (
-            f"刚录入的时间记录：\n{self.render_record_for_memory(record)}\n\n"
-            f"最近聊天摘录：\n{recent_chat_block}\n\n"
-            f"最近时间记录：\n{recent_records_block}\n"
-        )
-        system_prompt = (
-            "你是当前会话里的 AstrBot，现在只需要对用户刚录入的一条时间记录做一个短反馈。\n"
-            "你的回复要像正在和熟悉的用户说话，有一点反应感、活人感，但不要过头。\n"
-            "严格要求：\n"
-            "1. 输出中文，2到3句，总长度控制在30到90字。\n"
-            "2. 先对这条记录做自然反应，可以轻微吐槽、夸赞或共情。\n"
-            "3. 最后给1条很短、可以立刻执行的建议。\n"
-            "4. 可以参考最近聊天语气和最近时间记录，但绝不能编造不存在的事实。\n"
-            "5. 不要过度脑补用户的情绪、生活状态或关系氛围。\n"
-            "6. 不要使用标题、列表、引号、emoji，不要写成长总结。\n"
-            "7. 不要机械复述整条记录。"
-        )
-        if appendix := self.record_feedback_prompt_appendix():
-            system_prompt += appendix
-        response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
-        completion = self._normalize_feedback_text(response.completion_text)
-        return completion or None
 
     def _collect_feedback_text_fragments(self, records: list[dict[str, Any]]) -> list[str]:
         fragments: list[str] = []
@@ -1128,27 +1252,16 @@ class LyubishchevService:
         )
         if appendix := self.record_feedback_prompt_appendix():
             system_prompt += appendix
+        provider = self.get_record_feedback_provider(session_id)
         bot_feedback = await self._generate_current_bot_reply(
             session_id=session_id,
             prompt=prompt,
             system_prompt=system_prompt,
             preserve_newlines=True,
+            provider=provider,
         )
         if bot_feedback:
             return bot_feedback
-
-        provider = self.get_record_feedback_provider(session_id)
-        if provider:
-            try:
-                return await self._generate_record_feedback_with_llm(
-                    provider=provider,
-                    records=records,
-                    recent_records=recent_records,
-                    recent_chat_lines=recent_chat_lines,
-                    failures=failures,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Record feedback generation failed, fallback to template: %s", exc)
         return self._generate_record_feedback_fallback(
             records,
             recent_records,
@@ -1211,10 +1324,11 @@ class LyubishchevService:
     ) -> list[str]:
         if limit <= 0:
             return []
-        cid = await self.context.conversation_manager.get_curr_conversation_id(session_id)
+        raw = self.get_raw_session_id(session_id)
+        cid = await self.context.conversation_manager.get_curr_conversation_id(raw)
         if not cid:
             return []
-        conversation = await self.context.conversation_manager.get_conversation(session_id, cid)
+        conversation = await self.context.conversation_manager.get_conversation(raw, cid)
         if not conversation or not conversation.history:
             return []
         try:
@@ -1276,24 +1390,6 @@ class LyubishchevService:
     def _normalize_feedback_text(self, text: str) -> str:
         return self._normalize_agent_reply(text, preserve_newlines=True)
 
-    async def _get_or_create_reply_conversation(
-        self,
-        *,
-        session_id: str,
-        platform_id: str,
-    ) -> Any | None:
-        conv_mgr = self.context.conversation_manager
-        conversation = None
-        cid = await conv_mgr.get_curr_conversation_id(session_id)
-        if cid:
-            conversation = await conv_mgr.get_conversation(session_id, cid)
-        if conversation:
-            return conversation
-        cid = await conv_mgr.new_conversation(session_id, platform_id)
-        if not cid:
-            return None
-        return await conv_mgr.get_conversation(session_id, cid)
-
     async def _generate_current_bot_reply(
         self,
         *,
@@ -1301,96 +1397,23 @@ class LyubishchevService:
         prompt: str,
         system_prompt: str,
         preserve_newlines: bool = False,
+        provider: Provider | None = None,
     ) -> str | None:
-        from astrbot.api.provider import ProviderRequest
-        from astrbot.core.astr_main_agent import (
-            MainAgentBuildConfig,
-            build_main_agent,
-        )
-        from astrbot.core.cron.events import CronMessageEvent
-        from astrbot.core.platform.message_session import MessageSession
-
-        try:
-            session = MessageSession.from_str(session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to parse session for AstrBot reply generation: %s", exc)
-            return None
-
-        synthetic_event = CronMessageEvent(
-            context=self.context,
-            session=session,
-            message=prompt,
-            sender_name="LyubishchevPlugin",
-        )
-        synthetic_event.platform_meta.support_proactive_message = False
-
-        conversation = await self._get_or_create_reply_conversation(
-            session_id=session_id,
-            platform_id=synthetic_event.get_platform_id(),
-        )
-        if not conversation:
-            logger.warning("Failed to get conversation for AstrBot reply generation: %s", session_id)
+        """Generate a reply via provider.text_chat without touching conversation history."""
+        provider = provider or self.get_record_feedback_provider(session_id)
+        if not provider:
             return None
         try:
-            contexts = json.loads(conversation.history or "[]")
-            if not isinstance(contexts, list):
-                contexts = []
+            response = await provider.text_chat(
+                prompt=prompt, system_prompt=system_prompt
+            )
+            return self._normalize_agent_reply(
+                response.completion_text,
+                preserve_newlines=preserve_newlines,
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to parse conversation history for AstrBot reply generation: %s", exc)
-            contexts = []
-        cfg = self.context.get_config(umo=session_id)
-        tool_call_timeout = cfg.get("provider_settings", {}).get("tool_call_timeout", 120)
-        req = ProviderRequest(
-            prompt=prompt,
-            contexts=contexts,
-            system_prompt=system_prompt,
-            conversation=conversation,
-        )
-        build_config = MainAgentBuildConfig(
-            tool_call_timeout=tool_call_timeout,
-            llm_safety_mode=True,
-            streaming_response=False,
-            add_cron_tools=False,
-        )
-        result = await build_main_agent(
-            event=synthetic_event,
-            plugin_context=self.context,
-            config=build_config,
-            req=req,
-        )
-        if not result:
+            logger.warning("Direct provider reply failed: %s", exc)
             return None
-        async for _ in result.agent_runner.step_until_done(20):
-            pass
-        llm_resp = result.agent_runner.get_final_llm_resp()
-        if not llm_resp or llm_resp.role != "assistant":
-            return None
-        return self._normalize_agent_reply(
-            llm_resp.completion_text,
-            preserve_newlines=preserve_newlines,
-        )
-
-    def _generate_record_feedback_fallback_reference(
-        self,
-        record: dict[str, Any],
-        recent_records: list[dict[str, Any]],
-    ) -> str:
-        duration = record.get("duration_minutes")
-        target = record.get("project") or record.get("category") or record.get("normalized_text") or "这件事"
-        has_time_range = bool(record.get("started_at") and record.get("ended_at"))
-        same_project_recent = False
-        if record.get("project"):
-            same_project_recent = any(item.get("project") == record.get("project") for item in recent_records[:5])
-
-        if same_project_recent:
-            return f"你这阵子在 {target} 上挺连续的，这种连续记账很有复盘价值。下次顺手补一句产出结果，我后面给建议会更有依据。"
-        if duration is not None and duration >= 120:
-            return f"这段时间记得很整块，{target} 不是随手碰一下就算了。下次顺手写下阶段产出，后面查账会更有抓手。"
-        if duration is not None and duration <= 30:
-            return f"这条像个碎片任务，但你能及时记下来就已经很不错。下次尽量补上开始时间，之后回看会更清楚。"
-        if has_time_range:
-            return f"这条时间段记得挺清楚，时间账本开始有点柳比歇夫那味了。下次再补个项目或结果，我给你的建议会更准。"
-        return "先把这条落账是对的，别让时间一转眼就糊掉。下次尽量带上更具体的时长或时段，我后面复盘会更有依据。"
 
     def _generate_record_feedback_fallback(
         self,
@@ -1459,15 +1482,33 @@ class LyubishchevService:
         with_llm: bool | None = None,
     ) -> dict[str, Any]:
         limit = self.max_query_candidates()
-        text_hits = await self.storage.search_memory_chunks_text(
-            session_id,
-            question,
-            limit=limit,
-        )
         combined: dict[str, dict[str, Any]] = {}
-        for hit in text_hits:
-            hit["score"] = 0.45
-            combined[hit["chunk_id"]] = hit
+        text_queries: list[tuple[str, float]] = [(question.strip(), 0.45)]
+        for term in self._extract_query_terms(question):
+            if term != question.strip():
+                score = min(0.42, 0.22 + 0.02 * min(len(term), 6))
+                text_queries.append((term, score))
+
+        for query_text, base_score in text_queries:
+            if not query_text:
+                continue
+            text_hits = await self.storage.search_memory_chunks_text(
+                session_id,
+                query_text,
+                limit=max(limit, 6),
+            )
+            for rank, hit in enumerate(text_hits):
+                score = max(base_score - rank * 0.02, 0.05)
+                existing = combined.get(hit["chunk_id"])
+                if existing:
+                    existing["score"] = max(existing["score"], score)
+                    matched_terms = existing.setdefault("matched_terms", [])
+                    if query_text not in matched_terms:
+                        matched_terms.append(query_text)
+                    continue
+                hit["score"] = score
+                hit["matched_terms"] = [query_text]
+                combined[hit["chunk_id"]] = hit
 
         embedding_provider = self.get_embedding_provider()
         if embedding_provider:
@@ -1530,11 +1571,10 @@ class LyubishchevService:
         embedding_provider_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        scan_limit = max(limit * 100, 1000)
         chunks = await self.storage.list_memory_chunks_with_embeddings(
             session_id,
             embedding_provider_id=embedding_provider_id,
-            limit=scan_limit,
+            limit=None,
         )
         scored: list[dict[str, Any]] = []
         threshold = self.similarity_threshold()
@@ -1581,6 +1621,22 @@ class LyubishchevService:
         )
         response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
         return response.completion_text.strip()
+
+    def _extract_query_terms(self, question: str) -> list[str]:
+        normalized = question.strip().lower()
+        for stopword in QUERY_TERM_STOPWORDS:
+            normalized = normalized.replace(stopword, " ")
+        normalized = re.sub(r"[，。！？、,.!?;:：；()\[\]{}<>\"'“”‘’]+", " ", normalized)
+        terms: list[str] = []
+        for term in re.findall(r"[#\w\-/:\u4e00-\u9fff]+", normalized):
+            cleaned = term.strip()
+            if not cleaned:
+                continue
+            if len(cleaned) < 2 and not ABSOLUTE_DATE_RE.search(cleaned):
+                continue
+            if cleaned not in terms:
+                terms.append(cleaned)
+        return terms[:6]
 
     def _format_query_fallback(self, question: str, candidates: list[dict[str, Any]]) -> str:
         if not candidates:

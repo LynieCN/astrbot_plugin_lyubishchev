@@ -127,7 +127,7 @@ class LyubishchevStorage:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     def _escape_like(self, value: str) -> str:
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
     def _row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
@@ -212,7 +212,7 @@ class LyubishchevStorage:
                 """
                 SELECT record_id
                 FROM records
-                WHERE session_id = ? AND record_id LIKE ?
+                WHERE session_id = ? AND record_id LIKE ? AND status = 'active'
                 ORDER BY created_at DESC
                 """,
                 (session_id, like),
@@ -289,9 +289,9 @@ class LyubishchevStorage:
             ).fetchone()
             if current is None:
                 return None
-            row = dict(current)
+            row = self._row_to_dict(current) or {}
             row.update(updates)
-            row["tags_json"] = self._json_dumps(row.get("tags", row.get("tags_json", [])))
+            row["tags_json"] = self._json_dumps(row.get("tags", []))
             conn.execute(
                 """
                 UPDATE records
@@ -622,7 +622,7 @@ class LyubishchevStorage:
                 """
                 SELECT *
                 FROM memory_chunks
-                WHERE session_id = ? AND content LIKE ? ESCAPE '\'
+                WHERE session_id = ? AND content LIKE ? ESCAPE '!'
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
@@ -682,3 +682,53 @@ class LyubishchevStorage:
                 (session_id,),
             ).fetchone()
         return int(row["cnt"]) if row else 0
+
+    async def count_records_by_prefix(
+        self, session_id: str, record_id_prefix: str
+    ) -> int:
+        return await asyncio.to_thread(
+            self._count_records_by_prefix_sync, session_id, record_id_prefix
+        )
+
+    def _count_records_by_prefix_sync(
+        self, session_id: str, record_id_prefix: str
+    ) -> int:
+        like = f"{record_id_prefix}%"
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM records WHERE session_id = ? AND record_id LIKE ? AND status = 'active'",
+                (session_id, like),
+            ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    async def get_latest_record(self, session_id: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_latest_record_sync, session_id)
+
+    def _get_latest_record_sync(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM records
+                WHERE session_id = ? AND status = 'active'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    async def get_active_timer(self, session_id: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_active_timer_sync, session_id)
+
+    def _get_active_timer_sync(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM records
+                WHERE session_id = ? AND status = 'timing'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+        return self._row_to_dict(row)

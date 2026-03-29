@@ -1,354 +1,286 @@
 # AstrBot 柳比歇夫时间管理插件
 
-这个插件用于在 AstrBot 中记录、统计和追查个人时间使用情况。
+这个插件用来记录、查看、总结和追查个人时间使用情况。
 
-它会把时间记录保存为结构化账本，并在此基础上提供总结、定时推送、长期检索和日常对话调用能力。
-
-## 功能概览
-
-1. 记录时间，支持自然语言、时间段、时长、标签、分类、项目。
-2. 支持单条录入和多行批量录入。
-3. 查看今天、最近记录、单条详情，支持修改和删除。
-4. 生成日报、周报、月报和自定义区间总结。
-5. 支持定时总结并主动推送。
-6. 支持 embedding + rerank 的长期记录追查。
-7. 支持在普通聊天中按需调用时间记录工具。
-8. 录入后可生成结合近期聊天和记录的反馈。
-
-## 安装后建议先做的事
-
-先确认插件已经正常加载：
+现在的录入入口只保留一个：
 
 ```text
-/lyu help
+/ta <内容>
 ```
 
-然后录入一条最简单的记录：
+`/t` 只负责查看、修改、总结、查询和计时。  
+`/tr` 只负责定时总结规则。
+
+## 指令总览
 
 ```text
-/lyu note 09:00-10:30 阅读论文 #科研
+/ta <内容>
+
+/t hp
+/t ls [数量|日期|周期|记录ID前缀]
+/t ed <记录ID前缀> <新内容>
+/t dl <记录ID前缀>
+/t ud
+/t on <事项>
+/t of
+/t sm <周期>
+/t qy <问题或关键词>
+/t st
+
+/tr ls
+/tr ad <名称> <自然语言时间>
+/tr ad <名称 | cron | 周期 | timezone>
+/tr dl <规则ID前缀>
+/tr rn <规则ID前缀>
 ```
 
-再查看今天的记录：
+## 新增记录
+
+只用 `/ta`。
 
 ```text
-/lyu today
+/ta 09:00-10:30 阅读论文 #科研
+/ta 45分钟 处理报销 #行政
+/ta 昨天 1.5小时 写周报 category:总结
+/ta 2026-03-24 20:00-21:30 背单词 #英语 category:学习
 ```
 
-如果这几步都正常，插件就已经可用了。
-
-## 基本使用
-
-### 录入一条记录
+批量录入也走 `/ta`：
 
 ```text
-/lyu note 09:00-10:30 阅读论文 #科研
-```
-
-```text
-/lyu note 45分钟 处理报销 #行政
-```
-
-```text
-/lyu note 昨天 1小时 整理实验数据 #科研
-```
-
-### 批量录入
-
-`/lyu note` 支持按行拆分，一行一条：
-
-```text
-/lyu note
+/ta
 09:00-10:30 阅读论文 #科研
 10:40-11:10 回邮件 #行政
 14:00-15:30 开组会 #工作
 ```
 
-### 自动记录
-
-默认支持以下前缀：
-
-- `记录：`
-- `记录 `
-- `记时：`
-- `记时 `
-- `lyu：`
-- `lyu:`
-
-例如：
+也支持分号分隔：
 
 ```text
-记录：昨天 45分钟 处理报销 #行政
+/ta 09:00-09:30 站会 #工作；09:30-11:00 写代码 #开发；11:00-11:20 回消息 #行政
 ```
 
-如果 `auto_record_require_wake = true`，则仍需满足 AstrBot 的唤醒条件。
+## 查看与修改
 
-## 记录写法
-
-### 常见时间表达
-
-- 时间段：`09:00-10:30`、`09:00~10:30`
-- 时长：`45分钟`、`30min`、`2h`、`1.5小时`
-- 相对日期：`今天`、`昨天`、`前天`、`明天`
-- 绝对日期：`2026-03-24`
-
-### 结构化信息
-
-- 标签：`#科研`、`#学习`
-- 分类：`category:学习`、`分类:学习`
-- 项目：`project:论文`、`项目:论文`
-- 类型：`kind:plan`
-
-### 示例
+看今天：
 
 ```text
-/lyu note 08:00-09:30 背单词和精读文章 #英语 category:学习
+/t ls
 ```
 
+看最近 10 条：
+
 ```text
-/lyu note 14:00-16:00 处理实验数据 #科研 category:研究 project:NiFe
+/t ls 10
 ```
 
+看某一天或某个周期：
+
 ```text
-/lyu note 20:00-21:30 刷视频 #娱乐
+/t ls 2026-03-24
+/t ls 昨天
+/t ls 本周
+/t ls 最近7天
+/t ls 3.1-3.7
+/t ls range:2026-03-01,2026-03-07
 ```
 
-## 查看、修改和删除
-
-查看今天的记录：
+看单条详情：
 
 ```text
-/lyu today
+/t ls 8f3a
 ```
 
-查看最近几条：
+修改记录：
 
 ```text
-/lyu recent
-/lyu recent 10
+/t ed 8f3a 09:00-10:40 阅读论文 #科研 category:学习
+/t ed 8f3a 昨天 1小时 处理报销 #行政
 ```
 
-查看某条详情：
+删除记录：
 
 ```text
-/lyu show <记录ID前缀>
+/t dl 8f3a
 ```
 
-修改某条记录：
+撤销最近一条有效记录：
 
 ```text
-/lyu amend <记录ID前缀> <新的内容>
+/t ud
 ```
 
-删除某条记录：
+## 计时
+
+开始计时：
 
 ```text
-/lyu delete <记录ID前缀>
+/t on 阅读论文
+/t on 写代码 #开发 project:NiFe
+```
+
+结束计时并自动记账：
+
+```text
+/t of
+```
+
+典型流程：
+
+```text
+/t on 整理实验数据 #科研
+/t of
 ```
 
 ## 总结与追查
 
-日总结：
+周期总结：
 
 ```text
-/lyu summary day
+/t sm day
+/t sm 今天
+/t sm 本周
+/t sm 上周
+/t sm 本月
+/t sm 上月
+/t sm 最近7天
+/t sm 14天
+/t sm 3.1-3.7
+/t sm range:2026-03-01,2026-03-07
 ```
 
-周总结：
+说明：
+
+- 总结默认只统计实际记录的总时长。
+- 如果区间里有 `kind:plan`，会单独提示计划条数和计划时长。
+
+长期记忆追查：
 
 ```text
-/lyu summary week
+/t qy 我最近时间主要花在哪些事上？
+/t qy 帮我找一下上个月和报销有关的记录
+/t qy 这周我在 NiFe 项目上花了多少时间？
+/t qy 最近有没有连续几天都在写代码？
 ```
 
-月总结：
+## 定时规则
+
+查看已有规则：
 
 ```text
-/lyu summary month
+/tr ls
 ```
 
-最近 7 天：
+自然语言添加规则：
 
 ```text
-/lyu summary custom:7
+/tr ad 日报 每天22点
+/tr ad 日报 每天 22点
+/tr ad 周报 每周日21点
+/tr ad 月报 每月1号9点
 ```
 
-指定日期范围：
+高级写法：
 
 ```text
-/lyu summary range:2026-03-01,2026-03-07
+/tr ad 每日晚报 | 30 22 * * * | day | Asia/Shanghai
+/tr ad 每周周报 | 0 21 * * 0 | week | Asia/Shanghai
+/tr ad 双周回顾 | 0 22 * * 0 | custom:14 | Asia/Shanghai
 ```
 
-长期追查：
+手动运行和删除：
 
 ```text
-/lyu query 我最近时间主要花在哪了
+/tr rn a1b2
+/tr dl a1b2
 ```
+
+## 记录写法
+
+时间段：
 
 ```text
-/lyu query 帮我找一下上个月和报销有关的记录
+09:00-10:30
+09:00~10:30
+23:30-00:30
 ```
 
-## 定时总结
-
-先查看已有规则：
+时长：
 
 ```text
-/lyu rule list
+45分钟
+30min
+2h
+1.5小时
 ```
 
-添加一条规则：
+日期：
 
 ```text
-/lyu rule add 每日晚报 | 30 22 * * * | day | Asia/Shanghai
+今天
+昨天
+前天
+明天
+2026-03-24
+2026/03/24
 ```
 
-这条规则表示每天 22:30 推送日总结。
-
-例如每周日晚 21:00 推送周总结：
+结构化字段：
 
 ```text
-/lyu rule add 每周周报 | 0 21 * * 0 | week | Asia/Shanghai
+#科研
+category:学习
+project:论文
+kind:plan
 ```
 
-手动运行某条规则：
+综合示例：
 
 ```text
-/lyu rule run <规则ID前缀>
+/ta 08:00-09:30 背单词和精读文章 #英语 category:学习
+/ta 14:00-16:00 处理实验数据 #科研 category:研究 project:NiFe
+/ta 明天 2小时 准备开题汇报 kind:plan category:规划 project:论文
 ```
 
-删除某条规则：
+## 常用配置
 
-```text
-/lyu rule delete <规则ID前缀>
-```
+`default_timezone`
 
-## 日常对话调用
+- 默认时区，用于解析相对日期和定时规则。
+- 例子：`Asia/Shanghai`
 
-插件已经向 AstrBot 提供了可调用工具，因此在普通聊天中也可以直接提问，例如：
+`analysis_provider_id`
 
-- 我今天都做了什么？
-- 我这周时间主要花在哪了？
-- 我最近是不是又在摸鱼？
-- 帮我看看最近几条时间记录。
+- 用于 `/t sm` 和 `/t qy`。
 
-在工具调用可用的情况下，AstrBot 会按需读取插件记录再作答。
+`embedding_provider_id`
 
-## 录入反馈
+- 用于长期记忆写入和向量召回。
 
-每次成功录入后，AstrBot 可以结合：
+`rerank_provider_id`
 
-- 当前录入内容
-- 最近聊天上下文
-- 最近时间记录
+- 可选，用于 `/t qy` 重排结果。
 
-生成一段反馈。是否开启由 `record_feedback_enabled` 控制。
+`record_feedback_provider_id`
 
-## 配置说明
+- 可选，用于录入后的反馈。
 
-### `default_timezone`
+`record_feedback_enabled`
 
-默认时区。影响日期解析、定时规则和总结区间。
+- 控制录入后是否生成反馈。
 
-中国大陆通常使用：
+`summary_with_advice`
 
-```text
-Asia/Shanghai
-```
+- 控制总结里是否附带建议。
 
-### `analysis_provider_id`
+`query_answer_with_llm`
 
-用于总结、问答和部分分析能力。建议优先配置。
+- 关闭后，`/t qy` 会直接返回证据，不再让 LLM 组织答案。
 
-### `embedding_provider_id`
+`max_query_candidates`
 
-用于长期记忆向量化和语义召回。不配置也能记账，但长期检索能力会弱一些。
+- 长期记忆检索的候选上限。
 
-### `rerank_provider_id`
+`vector_similarity_threshold`
 
-用于 `/lyu query` 的结果重排。记录较多时建议配置。
-
-### `record_feedback_provider_id`
-
-录入反馈的兜底模型来源。插件默认会优先尝试使用当前会话里的 AstrBot 主机器人。
-
-### `auto_record_prefixes`
-
-自动记录前缀，一行一个。
-
-### `auto_record_require_wake`
-
-是否要求先唤醒 AstrBot 再进行自动记录。担心误识别时建议保持开启。
-
-### `record_feedback_enabled`
-
-是否在录入成功后生成反馈。
-
-### `record_feedback_max_recent_records`
-
-录入反馈时最多参考多少条最近记录。
-
-### `record_feedback_max_recent_chats`
-
-录入反馈时最多参考多少条最近聊天。
-
-### `record_feedback_prompt_appendix`
-
-给录入反馈额外追加提示要求。
-
-### `summary_with_advice`
-
-总结中是否附带建议。
-
-### `query_answer_with_llm`
-
-`/lyu query` 是否由模型组织最终答案。关闭后会更接近原始检索结果。
-
-### `max_query_candidates`
-
-检索时最多返回多少条候选记录。
-
-### `vector_similarity_threshold`
-
-向量召回阈值。越高越严格，通常保持默认即可。
-
-### `summary_prompt_appendix`
-
-给总结额外追加提示要求。
-
-## 常用命令
-
-### 记录与查看
-
-- `/lyu help`
-- `/lyu note <内容>`
-- `/lyu today`
-- `/lyu recent [数量]`
-- `/lyu show <记录ID前缀>`
-- `/lyu amend <记录ID前缀> <新内容>`
-- `/lyu delete <记录ID前缀>`
-
-### 总结与追查
-
-- `/lyu summary day`
-- `/lyu summary week`
-- `/lyu summary month`
-- `/lyu summary custom:7`
-- `/lyu summary range:2026-03-01,2026-03-07`
-- `/lyu query <问题或关键词>`
-
-### 定时规则
-
-- `/lyu rule list`
-- `/lyu rule add <名称 | cron | day|week|month|custom:7 | timezone可选>`
-- `/lyu rule delete <规则ID前缀>`
-- `/lyu rule run <规则ID前缀>`
-
-### 其他
-
-- `/lyu status`
-
-## 说明
-
-- 结构化记录是事实来源，统计、检索和总结都以时间记录为准。
-- 日常对话反馈和总结会参考聊天上下文，但不会替代原始记录本身。
-- 如果准备长期使用，建议尽量稳定使用标签、分类和项目字段，这样后续统计会更清楚。
+- 向量召回阈值，越高越严格。
