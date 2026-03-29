@@ -291,10 +291,12 @@ kind:plan
 - `record_feedback_enabled`
 
 `default_timezone`
+
 - 默认时区，用于解析相对日期和定时规则。
 - 例子：`Asia/Shanghai`
 
 `analysis_provider_id`
+
 用于总结和追查问答的主要模型。
 这个配置主要影响：
 - /t sm
@@ -303,6 +305,7 @@ kind:plan
 如果留空，插件会回退到当前会话正在使用的聊天模型。
 
 `embedding_provider_id`
+
 用于长期记忆写入和向量检索的 embedding 模型。
 这个配置主要影响：
 - 历史记录写入长期记忆
@@ -312,6 +315,7 @@ kind:plan
 如果你想认真使用“长期记忆追查”这一块，建议配置。
 
 `rerank_provider_id`
+
 用于 /t qy 的检索结果重排。
 这是可选项。
 有的话，检索出来的候选结果会再做一次排序，通常能让问答结果更稳一些。
@@ -319,6 +323,7 @@ kind:plan
 如果你已经配了 embedding_provider_id，并且比较在意 /t qy 的质量，可以再考虑加这个。
 
 `record_scope`
+
 记录隔离粒度。
 可选值：
 sender：按发送者隔离记录
